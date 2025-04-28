@@ -296,3 +296,4 @@
 
   Scratch.extensions.register(new AzaksStoreExtension());
 })(Scratch);
+
