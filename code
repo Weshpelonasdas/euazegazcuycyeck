@@ -1,0 +1,298 @@
+(function(Scratch) {
+  'use strict';
+
+  const CLOUD_VAR_NAME = "azaks_codes"; 
+  const BANS_VAR_NAME = "azaks_bans";
+  const ERRORS_VAR_NAME = "azaks_errors"; 
+  const CODE_PREFIX = "AZKS";
+  const VALID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const SIX_MONTHS_MS = 1000 * 60 * 60 * 24 * 30 * 6; // 6 mois en millisecondes
+  const ERROR_LIMIT = 5; // Limite d'erreurs avant le captcha
+  const ERROR_TIME_FRAME = 1000 * 60 * 10; // Temps d'observation (10 minutes)
+  const CAPTCHA_WORDS = ["BANANE", "TURBO", "CLOUD", "JUMP", "SCRATCH"];
+
+  class AzaksStoreExtension {
+    constructor() {
+      this.codes = {}; 
+      this.bans = {};
+      this.errors = {};
+
+      this.initCloud();
+    }
+
+    async initCloud() {
+      try {
+        const codesData = Scratch.CloudData?.get(CLOUD_VAR_NAME);
+        const bansData = Scratch.CloudData?.get(BANS_VAR_NAME);
+        const errorsData = Scratch.CloudData?.get(ERRORS_VAR_NAME);
+
+        if (codesData) {
+          this.codes = JSON.parse(codesData);
+        }
+        if (bansData) {
+          this.bans = JSON.parse(bansData);
+        }
+        if (errorsData) {
+          this.errors = JSON.parse(errorsData);
+        }
+      } catch (e) {
+        console.warn("Erreur de lecture du cloud:", e);
+        this.codes = {};
+        this.bans = {};
+        this.errors = {};
+      }
+    }
+
+    saveCloud() {
+      if (Scratch.CloudData?.set) {
+        Scratch.CloudData.set(CLOUD_VAR_NAME, JSON.stringify(this.codes));
+        Scratch.CloudData.set(BANS_VAR_NAME, JSON.stringify(this.bans));
+        Scratch.CloudData.set(ERRORS_VAR_NAME, JSON.stringify(this.errors));
+      }
+    }
+
+    randomBlock() {
+      let block = "";
+      for (let i = 0; i < 4; i++) {
+        block += VALID_CHARS[Math.floor(Math.random() * VALID_CHARS.length)];
+      }
+      return block;
+    }
+
+    generateUniqueCode() {
+      let code;
+      do {
+        code = `${CODE_PREFIX}-${this.randomBlock()}-${this.randomBlock()}-${this.randomBlock()}`;
+      } while (this.codes[code]);
+      return code;
+    }
+
+    createCode(type, value) {
+      const code = this.generateUniqueCode();
+      this.codes[code] = {
+        type: type.toUpperCase(),
+        value: value,
+        createdAt: Date.now()
+      };
+      this.saveCloud();
+      return code;
+    }
+
+    useCode(inputCode, playerId) {
+      if (this.bans[playerId]) {
+        return "Tu es banni, contacte l'administration.";
+      }
+
+      const playerErrors = this.errors[playerId] || { count: 0, firstErrorAt: Date.now() };
+      const code = inputCode.trim().toUpperCase();
+      const entry = this.codes[code];
+
+      if (!entry) {
+        playerErrors.count += 1;
+        if (playerErrors.count >= ERROR_LIMIT) {
+          this.errors[playerId] = { count: playerErrors.count, firstErrorAt: Date.now() };
+          this.saveCloud();
+          return "Trop d'erreurs. Résous le captcha.";
+        }
+        this.errors[playerId] = playerErrors;
+        this.saveCloud();
+        return "Code invalide ❌";
+      }
+
+      const age = Date.now() - entry.createdAt;
+      if (age > SIX_MONTHS_MS) {
+        delete this.codes[code];
+        this.saveCloud();
+        return "Code expiré ⌛";
+      }
+
+      const action = (entry.type === "SOLDE") 
+        ? `Ajout de ${entry.value} 💰` 
+        : `Jeu débloqué : ${entry.value} 🎮`;
+
+      delete this.codes[code];
+      this.saveCloud();
+      return `Code utilisé avec succès ✅ : ${action}`;
+    }
+
+    captchaRequired(playerId) {
+      const playerErrors = this.errors[playerId];
+      if (!playerErrors || Date.now() - playerErrors.firstErrorAt > ERROR_TIME_FRAME) {
+        delete this.errors[playerId];
+        this.saveCloud();
+        return false;
+      }
+
+      return playerErrors.count >= ERROR_LIMIT;
+    }
+
+    resolveCaptcha(playerId, word) {
+      const correctWord = CAPTCHA_WORDS[Math.floor(Math.random() * CAPTCHA_WORDS.length)];
+      if (word.toUpperCase() === correctWord) {
+        delete this.errors[playerId];
+        this.saveCloud();
+        return "Captcha résolu ✅";
+      }
+      return "Captcha incorrect ❌";
+    }
+
+    banPlayer(playerId) {
+      this.bans[playerId] = true;
+      delete this.errors[playerId];
+      this.saveCloud();
+      return "Joueur banni définitivement.";
+    }
+
+    unbanPlayer(playerId) {
+      delete this.bans[playerId];
+      this.saveCloud();
+      return "Joueur débanni.";
+    }
+
+    cleanExpiredCodes() {
+      const now = Date.now();
+      let count = 0;
+      for (const code in this.codes) {
+        if (now - this.codes[code].createdAt > SIX_MONTHS_MS) {
+          delete this.codes[code];
+          count++;
+        }
+      }
+      if (count > 0) {
+        this.saveCloud();
+      }
+      return count;
+    }
+
+    getInfo() {
+      return {
+        id: 'azaksstoreext',
+        name: 'AZAKS Codes Store',
+        color1: '#00AAFF',
+        color2: '#0077BB',
+        blocks: [
+          {
+            opcode: 'createCode',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'créer un code de type [TYPE] avec valeur [VALUE]',
+            arguments: {
+              TYPE: {
+                type: Scratch.ArgumentType.STRING,
+                menu: 'types'
+              },
+              VALUE: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: '1000'
+              }
+            }
+          },
+          {
+            opcode: 'useCode',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'utiliser le code [CODE] par [JOUEUR]',
+            arguments: {
+              CODE: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'AZKS-XXXX-XXXX-XXXX'
+              },
+              JOUEUR: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'Player123'
+              }
+            }
+          },
+          {
+            opcode: 'captchaRequired',
+            blockType: Scratch.BlockType.BOOLEAN,
+            text: 'est-ce que [JOUEUR] a besoin de captcha ?',
+            arguments: {
+              JOUEUR: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'Player123'
+              }
+            }
+          },
+          {
+            opcode: 'resolveCaptcha',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'résoudre captcha pour [JOUEUR] avec le mot [WORD]',
+            arguments: {
+              JOUEUR: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'Player123'
+              },
+              WORD: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'BANANE'
+              }
+            }
+          },
+          {
+            opcode: 'banPlayer',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'bannir le joueur [JOUEUR]',
+            arguments: {
+              JOUEUR: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'Player123'
+              }
+            }
+          },
+          {
+            opcode: 'unbanPlayer',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'débannir le joueur [JOUEUR]',
+            arguments: {
+              JOUEUR: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'Player123'
+              }
+            }
+          },
+          {
+            opcode: 'cleanExpiredCodes',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'supprimer les codes expirés'
+          }
+        ],
+        menus: {
+          types: {
+            acceptReporters: true,
+            items: ['SOLDE', 'JEU']
+          }
+        }
+      };
+    }
+
+    createCode(args) {
+      return this.createCode(args.TYPE, args.VALUE);
+    }
+
+    useCode(args) {
+      return this.useCode(args.CODE, args.JOUEUR);
+    }
+
+    captchaRequired(args) {
+      return this.captchaRequired(args.JOUEUR);
+    }
+
+    resolveCaptcha(args) {
+      return this.resolveCaptcha(args.JOUEUR, args.WORD);
+    }
+
+    banPlayer(args) {
+      return this.banPlayer(args.JOUEUR);
+    }
+
+    unbanPlayer(args) {
+      return this.unbanPlayer(args.JOUEUR);
+    }
+
+    cleanExpiredCodes() {
+      const n = this.cleanExpiredCodes();
+      return `${n} codes expirés supprimés ✅`;
+    }
+  }
+
+  Scratch.extensions.register(new AzaksStoreExtension());
+})(Scratch);
